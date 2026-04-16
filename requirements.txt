@@ -1,0 +1,5 @@
+numpy>=1.26,<3
+onnx>=1.17,<2
+onnxruntime>=1.19,<2
+onnx-tool>=0.7,<1
+pytest>=8.3,<9
