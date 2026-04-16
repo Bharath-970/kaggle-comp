@@ -1,8 +1,9 @@
-from __future__ import annotations
+"""Test configuration for local src-layout imports."""
 
-import sys
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-if ROOT.as_posix() not in sys.path:
-    sys.path.insert(0, ROOT.as_posix())
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
