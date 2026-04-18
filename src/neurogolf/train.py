@@ -30,6 +30,12 @@ class TrainConfig:
     batch_size: int = 16
     seed: int = 42
     use_augmentation: bool = True
+    min_epochs: int = 24
+    eval_interval: int = 8
+    early_stop_patience: int = 20
+    early_stop_delta: float = 5e-4
+    entropy_patience_bonus: int = 4
+    enable_dynamic_early_stop: bool = True
 
 
 @dataclass(frozen=True)
@@ -156,6 +162,7 @@ def train_task_model(
     # We also include test inputs to ensure the test colors are in the map
     all_inputs.extend([p.input_grid for p in task.test])
     global_cmap = get_color_normalization_map(all_inputs)
+    setattr(model, "neurogolf_color_map", global_cmap)
 
     # Normalize all training pairs using the same GLOBAL map
     norm_pairs = []
@@ -179,10 +186,16 @@ def train_task_model(
 
     n = base_x.shape[0]
     best_loss = float("inf")
+    best_exact = 0.0
+    best_entropy = float("inf")
+    best_state: dict[str, torch.Tensor] | None = None
     final_loss = float("inf")
+    patience_left = max(1, int(config.early_stop_patience))
+    recent_losses: list[float] = []
+    completed_epochs = 0
 
     for epoch in range(config.epochs):
-        epoch_loss = 0.0
+        completed_epochs = epoch + 1
         # Each epoch, we create a fresh augmented batch
         # We augment every single training sample
         xb, yb = _apply_augmentation(base_x, base_y)
@@ -200,17 +213,65 @@ def train_task_model(
         loss.backward()
         optimizer.step()
 
-        epoch_loss = float(loss.detach().item())
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        model.eval()
+        with torch.no_grad():
+            eval_logits = model(base_x)
+            eval_loss = F.cross_entropy(eval_logits, base_y)
+            pred = torch.argmax(eval_logits, dim=1)
+            pair_exact = float((pred == base_y).view(pred.shape[0], -1).all(dim=1).float().mean().item())
+            probs = torch.softmax(eval_logits, dim=1).clamp_min(1e-8)
+            entropy = float((-(probs * probs.log()).sum(dim=1).mean()).item())
+
+        epoch_loss = float(eval_loss.item())
         final_loss = epoch_loss
+        recent_losses.append(epoch_loss)
+
+        improved_loss = epoch_loss + config.early_stop_delta < best_loss
+        improved_exact = pair_exact > best_exact + 1e-6
+        entropy_not_worse = entropy <= best_entropy + 1e-3
+
+        if improved_loss or improved_exact:
+            best_loss = min(best_loss, epoch_loss)
+            best_exact = max(best_exact, pair_exact)
+            if entropy_not_worse:
+                best_entropy = min(best_entropy, entropy)
+            best_state = {
+                name: tensor.detach().cpu().clone()
+                for name, tensor in model.state_dict().items()
+            }
+            if config.enable_dynamic_early_stop:
+                patience_left = config.early_stop_patience
+                if pair_exact >= 0.75 and entropy_not_worse:
+                    patience_left += config.entropy_patience_bonus
+        elif config.enable_dynamic_early_stop and epoch + 1 >= config.min_epochs:
+            patience_left -= 1
+
+        if pair_exact >= 1.0 and epoch + 1 >= max(8, config.min_epochs // 2):
+            break
+
+        if (
+            config.enable_dynamic_early_stop
+            and epoch + 1 >= config.min_epochs
+            and (epoch + 1) % max(1, config.eval_interval) == 0
+        ):
+            plateau = len(recent_losses) >= 3 and (
+                max(recent_losses[-3:]) - min(recent_losses[-3:]) < config.early_stop_delta
+            )
+            if patience_left <= 0 or (plateau and pair_exact >= 0.95):
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    if not np.isfinite(best_loss):
+        best_loss = final_loss
 
     return TaskTrainSummary(
         task_id=task_id,
         train_samples=n,
         final_loss=final_loss,
         best_loss=best_loss,
-        epochs=config.epochs,
+        epochs=completed_epochs,
     )
 
 

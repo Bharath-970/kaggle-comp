@@ -32,6 +32,12 @@ def train_ensemble_for_task(
             seed=config.seed + i,
             use_augmentation=config.use_augmentation,
             batch_size=config.batch_size,
+            min_epochs=config.min_epochs,
+            eval_interval=config.eval_interval,
+            early_stop_patience=config.early_stop_patience,
+            early_stop_delta=config.early_stop_delta,
+            entropy_patience_bonus=config.entropy_patience_bonus,
+            enable_dynamic_early_stop=config.enable_dynamic_early_stop,
         )
         
         model = RegisterBackbone(**backbone_kwargs)
