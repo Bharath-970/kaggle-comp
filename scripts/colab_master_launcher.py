@@ -3312,7 +3312,6 @@ def main():
                 for filename in uploaded.keys():
                     if filename.endswith(".zip"):
                         print(f"Unzipping {filename}...")
-                        import zipfile
                         with zipfile.ZipFile(filename, 'r') as zip_ref:
                             zip_ref.extractall(dataset_root)
                     else:
