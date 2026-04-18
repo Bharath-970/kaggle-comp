@@ -3226,8 +3226,14 @@ def _is_arc_task_json(path: Path) -> bool:
 
 
 def _discover_arc_task_files(root: Path, recursive: bool = True) -> list[Path]:
-    iterator = root.rglob("task*.json") if recursive else root.glob("task*.json")
-    return sorted(path for path in iterator if path.is_file() and _is_arc_task_json(path))
+    primary_iterator = root.rglob("task*.json") if recursive else root.glob("task*.json")
+    primary = sorted(path for path in primary_iterator if path.is_file() and _is_arc_task_json(path))
+    if primary:
+        return primary
+
+    # Some ARC bundles use plain hex-like filenames (e.g. 00576224.json).
+    fallback_iterator = root.rglob("*.json") if recursive else root.glob("*.json")
+    return sorted(path for path in fallback_iterator if path.is_file() and _is_arc_task_json(path))
 
 def main():
     parser = argparse.ArgumentParser(add_help=False)
