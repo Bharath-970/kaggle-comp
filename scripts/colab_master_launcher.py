@@ -3213,8 +3213,25 @@ def refine_statics_v4(onnx_path, output_path):
         print(f"Error refining {onnx_path}: {e}")
         return False
 
+
+def _is_arc_task_json(path: Path) -> bool:
+    """Returns True when JSON contains ARC-style train/test lists."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return isinstance(payload.get("train"), list) and isinstance(payload.get("test"), list)
+
+
+def _discover_arc_task_files(root: Path, recursive: bool = True) -> list[Path]:
+    iterator = root.rglob("task*.json") if recursive else root.glob("task*.json")
+    return sorted(path for path in iterator if path.is_file() and _is_arc_task_json(path))
+
 def main():
     parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--dataset-root", type=str, default="")
     parser.add_argument("--start-index", type=int, default=1)
     parser.add_argument("--end-index", type=int, default=0)
     parser.add_argument("--task-limit", type=int, default=0)
@@ -3224,23 +3241,42 @@ def main():
     
     # --- Robust Data Discovery ---
     # We search in multiple candidate roots to avoid "Data directory empty" failures.
-    candidate_roots = [
-        Path("data"),
-        Path("."),
-        Path("/content"),
-        Path("neurogolf-2026"),
-        Path("/Users/bharath/Downloads/neurogolf-2026"),
-        Path("/Users/bharath/Downloads/neurogolf-2026-main")
-    ]
+    user_dataset_root = Path(args.dataset_root).expanduser() if args.dataset_root else None
+    home_downloads = Path.home() / "Downloads"
+    candidate_roots = []
+    if user_dataset_root is not None:
+        candidate_roots.append(user_dataset_root)
+    candidate_roots.extend(
+        [
+            Path("data"),
+            Path("."),
+            Path("/content"),
+            Path("neurogolf-2026"),
+            home_downloads / "neurogolf-2026",
+            home_downloads / "neurogolf-2026-main",
+        ]
+    )
+
+    # De-duplicate while preserving order.
+    deduped_roots: list[Path] = []
+    seen_roots: set[str] = set()
+    for root in candidate_roots:
+        key = str(root)
+        if key in seen_roots:
+            continue
+        seen_roots.add(key)
+        deduped_roots.append(root)
+    candidate_roots = deduped_roots
     
     tasks = []
     dataset_found_in = None
     
-    # Priority search
+    # Priority search: find ARC-like task JSON files.
     for root in candidate_roots:
         if root.exists() and root.is_dir():
-            # Strict search for competition-named files
-            found = sorted(list(root.glob("task*.json")))
+            # Avoid deep recursive scans under '.'; recurse for explicit dataset dirs.
+            recursive_scan = root != Path(".")
+            found = _discover_arc_task_files(root, recursive=recursive_scan)
             if found:
                 tasks = found
                 dataset_found_in = root
@@ -3249,12 +3285,13 @@ def main():
     # Fallback to general JSONs only if in a dedicated data directory
     if not tasks:
         for root in candidate_roots:
-             if root.exists() and root.is_dir() and "data" in str(root).lower():
-                 found = sorted(list(root.glob("*.json")))
-                 if found:
-                     tasks = found
-                     dataset_found_in = root
-                     break
+            if root.exists() and root.is_dir() and "data" in str(root).lower():
+                iterator = root.rglob("*.json") if root != Path(".") else root.glob("*.json")
+                found = sorted(path for path in iterator if path.is_file() and _is_arc_task_json(path))
+                if found:
+                    tasks = found
+                    dataset_found_in = root
+                    break
 
     if not tasks:
         print("\n[!] No tasks found in common candidate directories.")
@@ -3274,7 +3311,7 @@ def main():
                             zip_ref.extractall(dataset_root)
                     else:
                         shutil.move(filename, dataset_root / filename)
-                tasks = sorted(list(dataset_root.rglob("*.json")))
+                tasks = sorted(path for path in dataset_root.rglob("*.json") if path.is_file() and _is_arc_task_json(path))
                 dataset_found_in = dataset_root
         except ImportError:
             print("Error: Manual data placement required. Searched in:")
