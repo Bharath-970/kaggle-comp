@@ -654,47 +654,62 @@ class FloodFillSolver(nn.Module):
         self.iterations = iterations
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        bg = x[:, self.bg_color : self.bg_color + 1, :, :]  # [1,1,GRID_SIZE,GRID_SIZE]
+        # Extract just the color channels to find active region bounding box
+        colors = x[:, :COLOR_CHANNELS, :, :]
+        fg = (colors[:, 1:].sum(dim=1) > 0.5)  # any non-bg color
 
-        # Dynamically detect active region: cells that sum to >0 across all channels
-        # Since encode_grid_to_tensor uses one-hot colors, sum of channels = 1 for active cells and 0 for padding.
-        active_mask = x.sum(dim=1, keepdim=True)  # [1,1,GRID_SIZE,GRID_SIZE]
+        if not fg.any():
+            return x  # no content, return as-is
 
-        # Build dynamic border: edge rows and cols of the active region
-        # An active cell is on the border if any neighbour (or itself) is non-active
-        outside_active = 1.0 - active_mask
-        # Pad with 1.0 (non-active) so cells touching top/left of GRID_SIZExGRID_SIZE are correctly marked as border
-        padded_outside = F.pad(outside_active, (1, 1, 1, 1), value=1.0)
-        reached_outside = F.max_pool2d(padded_outside, kernel_size=3, stride=1, padding=0)
-        border_mask = active_mask * (reached_outside > 0.5).float()
+        # Find bounding box of active content
+        any_fg = fg.any(dim=0)
+        rows = any_fg.any(dim=1).nonzero()
+        cols = any_fg.any(dim=0).nonzero()
+        if rows.numel() == 0 or cols.numel() == 0:
+            return x
 
-        # Seed: bg cells on the border of the active region
-        external = bg * border_mask
+        r0, r1 = rows.min().item(), rows.max().item() + 1
+        c0, c1 = cols.min().item(), cols.max().item() + 1
+        h, w = r1 - r0, c1 - c0
 
-        # Flood-fill through bg cells using repeated 3×3 max-pool
+        # Extract the active region and process only that
+        active_region = x[:, :, r0:r1, c0:c1]  # [1, STATE_CHANNELS, h, w]
+        bg = active_region[:, self.bg_color : self.bg_color + 1, :, :]  # [1, 1, h, w]
+
+        # 4-connected flood-fill: seed from border, spread inward
+        external = torch.zeros_like(bg)
+        # Mark all border bg cells as externally reachable
+        external[:, :, 0, :] = bg[:, :, 0, :]  # top row
+        external[:, :, -1, :] = bg[:, :, -1, :]  # bottom row
+        external[:, :, :, 0] = bg[:, :, :, 0]  # left col
+        external[:, :, :, -1] = bg[:, :, :, -1]  # right col
+
+        # Iteratively spread: each step marks bg cells adjacent to marked cells
         for _ in range(self.iterations):
-            spread = F.max_pool2d(external, kernel_size=3, stride=1, padding=1)
-            external = bg * spread  # can only spread through bg
+            prev = external.clone()
+            # Spread to 4-neighbors using successive dilation operations
+            spread_up = torch.cat([torch.zeros_like(external[:, :, :1, :]), external[:, :, :-1, :]], dim=2)
+            spread_down = torch.cat([external[:, :, 1:, :], torch.zeros_like(external[:, :, :1, :])], dim=2)
+            spread_left = torch.cat([torch.zeros_like(external[:, :, :, :1]), external[:, :, :, :-1]], dim=3)
+            spread_right = torch.cat([external[:, :, :, 1:], torch.zeros_like(external[:, :, :, :1])], dim=3)
 
-        # Enclosed bg = in active region, is bg, NOT externally reachable
-        enclosed = bg * (1.0 - external) * active_mask
+            # Union of all spreads
+            spread = (spread_up + spread_down + spread_left + spread_right).clamp(0, 1)
+            # Can only reach bg cells
+            external = torch.max(external, bg * spread)
+            # Stop if no change
+            if torch.equal(external, prev):
+                break
 
-        # Rebuild output: ONNX-safe (no clone): reconstruct each channel
-        not_enclosed = 1.0 - enclosed
-        bg_out = bg * not_enclosed  # remove bg from enclosed positions
-        fill_ch = x[:, self.fill_color : self.fill_color + 1, :, :]
-        fill_out = fill_ch * not_enclosed + enclosed  # add fill at enclosed
+        # Enclosed bg = bg cells NOT reachable from border
+        enclosed = bg * (1.0 - external)
 
-        # Reconstruct full 10+K channel tensor
-        channels = []
-        for c in range(STATE_CHANNELS):
-            if c == self.bg_color:
-                channels.append(bg_out)
-            elif c == self.fill_color:
-                channels.append(fill_out)
-            else:
-                channels.append(x[:, c : c + 1, :, :])
-        return torch.cat(channels, dim=1)
+        # Replace enclosed bg with fill_color
+        out = x.clone()
+        out[:, self.bg_color, r0:r1, c0:c1] = (bg * (1.0 - enclosed)).squeeze(1)
+        out[:, self.fill_color, r0:r1, c0:c1] = (active_region[:, self.fill_color : self.fill_color + 1, :, :] * (1.0 - enclosed) + enclosed).squeeze(1)
+
+        return out
 
 
 class IsolatedPixelCrossSolver(nn.Module):
