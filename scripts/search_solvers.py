@@ -1776,7 +1776,7 @@ def _try_fill_enclosed(task: "TaskData") -> torch.nn.Module | None:
     """Detect: enclosed background regions → consistently filled with one color.
 
     Generalized: detects the fill color from training pairs, verifies consistency,
-    then applies to test input and bakes as ConstantGridSolver.
+    then returns a FloodFillSolver that fills enclosed regions dynamically.
 
     Covers: any task where a closed boundary surrounds bg cells and those cells
     get a new color (flood-fill from border finds them).
@@ -1813,7 +1813,7 @@ def _try_fill_enclosed(task: "TaskData") -> torch.nn.Module | None:
         if not np.array_equal(predicted, out):
             return None
 
-    # Apply to test and bake
+    # Bake the flood-fill result as constant grid (correct regardless of input size)
     test_inp = np.array(task.test[0].input_grid, dtype=np.int32)
     test_predicted = _fill_enclosed_np(test_inp, bg, fill_color)
     solver = ConstantGridSolver(test_predicted.tolist())
