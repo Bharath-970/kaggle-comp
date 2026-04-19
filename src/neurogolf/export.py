@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import warnings
 
 from .backbone import RegisterBackbone
 from .constants import INPUT_SHAPE
@@ -36,18 +37,25 @@ def export_static_onnx(
     dummy_input = torch.zeros(input_shape, dtype=torch.float32)
 
     with torch.no_grad():
-        torch.onnx.export(
-            model,
-            dummy_input,
-            str(path),
-            export_params=True,
-            opset_version=opset,
-            do_constant_folding=True,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes=None,
-            external_data=False,
-        )
+        # Torch 2.6+ emits a noisy pytree deprecation warning inside export internals.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`isinstance\(treespec, LeafSpec\)` is deprecated.*",
+                category=FutureWarning,
+            )
+            torch.onnx.export(
+                model,
+                dummy_input,
+                str(path),
+                export_params=True,
+                opset_version=opset,
+                do_constant_folding=True,
+                input_names=["input"],
+                output_names=["output"],
+                dynamic_axes=None,
+                external_data=False,
+            )
 
     if not run_validation:
         return None

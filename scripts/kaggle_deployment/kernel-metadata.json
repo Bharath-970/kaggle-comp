@@ -1,0 +1,14 @@
+{
+  "id": "bharath111l/neurogolf-v12-master",
+  "title": "neurogolf-v12-master",
+  "code_file": "neurogolf_v12_bundle.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [],
+  "competition_sources": ["neurogolf-2026"],
+  "kernel_sources": []
+}

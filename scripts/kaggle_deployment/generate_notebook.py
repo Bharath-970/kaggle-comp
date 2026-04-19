@@ -1,0 +1,74 @@
+import json
+
+notebook = {
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# NeuroGolf V12: Adaptive Beam & Reasoning Sweep\n",
+    "\n",
+    "This notebook runs the 400-task parallel sweep using the Phase 3 Reasoning Library."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import sys\n",
+    "import subprocess\n",
+    "from pathlib import Path\n",
+    "\n",
+    "# 1. Setup paths\n",
+    "import zipfile\n",
+    "import glob\n",
+    "print(\"🔍 Searching for code.zip in /kaggle/input...\")\n",
+    "found_zips = glob.glob(\"/kaggle/input/**/code.zip\", recursive=True)\n",
+    "if found_zips:\n",
+    "    dataset_zip = found_zips[0]\n",
+    "    print(f\"✅ Found code.zip at {dataset_zip}. Extracting...\")\n",
+    "    with zipfile.ZipFile(dataset_zip, 'r') as zip_ref:\n",
+    "        zip_ref.extractall(\"/kaggle/working\")\n",
+    "    repo_path = \"/kaggle/working\"\n",
+    "else:\n",
+    "    repo_path = \"/kaggle/working\"\n",
+    "    print(\"⚠️ code.zip not found anywhere in /kaggle/input. Using raw /kaggle/working\")\n",
+    "\n",
+    "sys.path.insert(0, os.path.join(repo_path, 'src'))\n",
+    "sys.path.insert(0, os.path.join(repo_path, 'scripts'))\n",
+    "\n",
+    "print(f\"🚀 Executing sweep from {repo_path}\")\n",
+    "\n",
+    "# 2. Run the sweep\n",
+    "!python {repo_path}/scripts/kaggle_solve.py"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.12"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
+
+with open('scripts/kaggle_deployment/neurogolf_v12_sweep.ipynb', 'w') as f:
+    json.dump(notebook, f, indent=1)
