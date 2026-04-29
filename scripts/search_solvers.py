@@ -32,6 +32,7 @@ from neurogolf.solvers import (
     KroneckerSolver,
     NearestNeighborScaleSolver,
     PerColorShiftSolver,
+    RelativeMoveSolver,
     RotationSolver,
     ShiftSolver,
     SubgridSolver,
@@ -80,9 +81,9 @@ class QuadrantMirrorSolver(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         inp = x[:, :, : self.in_h, : self.in_w]
-        fh = torch.flip(inp, dims=[-1])       # horizontal mirror
-        fv = torch.flip(inp, dims=[-2])       # vertical mirror
-        fb = torch.flip(inp, dims=[-2, -1])   # both mirrors
+        fh = torch.flip(inp, dims=[-1])  # horizontal mirror
+        fv = torch.flip(inp, dims=[-2])  # vertical mirror
+        fb = torch.flip(inp, dims=[-2, -1])  # both mirrors
         top = torch.cat([inp, fh], dim=-1)
         bot = torch.cat([fv, fb], dim=-1)
         out_block = torch.cat([top, bot], dim=-2)
@@ -110,7 +111,7 @@ class RotationQuadrantSolver(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         inp = x[:, :, : self.in_h, : self.in_w]
         # rot90 CCW = transpose then flip left-right
-        r90  = torch.flip(inp.permute(0, 1, 3, 2), dims=[-2])  # flipud(T) = rot90 CCW
+        r90 = torch.flip(inp.permute(0, 1, 3, 2), dims=[-2])  # flipud(T) = rot90 CCW
         # rot180 = flip both axes
         r180 = torch.flip(torch.flip(inp, dims=[-1]), dims=[-2])
         r270 = torch.flip(inp.permute(0, 1, 3, 2), dims=[-1])  # fliplr(T) = rot270 CCW
@@ -126,6 +127,7 @@ class RotationQuadrantSolver(torch.nn.Module):
         out = torch.zeros_like(x)
         out[:, :, : 2 * self.in_h, : 2 * self.in_w] = out_block
         return out
+
 
 from neurogolf.task_io import GridPair, TaskData, load_task_json
 
@@ -156,7 +158,9 @@ def load_task_json_relaxed(task_path: str | Path) -> tuple[TaskData, int]:
             else:
                 dropped += 1
                 if strict:
-                    raise ValueError(f"{split} contains unsupported grid size > {GRID_SIZE}x{GRID_SIZE}.")
+                    raise ValueError(
+                        f"{split} contains unsupported grid size > {GRID_SIZE}x{GRID_SIZE}."
+                    )
         return tuple(parsed)
 
     task = TaskData(
@@ -167,7 +171,9 @@ def load_task_json_relaxed(task_path: str | Path) -> tuple[TaskData, int]:
     return task, dropped
 
 
-def _iter_all_pairs(task: TaskData, *, include_arc_gen: bool = True) -> Iterable[GridPair]:
+def _iter_all_pairs(
+    task: TaskData, *, include_arc_gen: bool = True
+) -> Iterable[GridPair]:
     for pair in task.train:
         yield pair
     for pair in task.test:
@@ -185,7 +191,9 @@ def _iter_search_pairs(task: TaskData) -> Iterable[GridPair]:
         yield pair
 
 
-def check_solve(model: torch.nn.Module, task: TaskData, *, include_arc_gen: bool = True) -> bool:
+def check_solve(
+    model: torch.nn.Module, task: TaskData, *, include_arc_gen: bool = True
+) -> bool:
     model.eval()
     with torch.no_grad():
         for pair in _iter_all_pairs(task, include_arc_gen=include_arc_gen):
@@ -198,7 +206,9 @@ def check_solve(model: torch.nn.Module, task: TaskData, *, include_arc_gen: bool
     return True
 
 
-def _all_pairs_same_shape(task: TaskData) -> tuple[tuple[int, int], tuple[int, int]] | None:
+def _all_pairs_same_shape(
+    task: TaskData,
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
     pairs = list(_iter_all_pairs(task))
     if not pairs:
         return None
@@ -265,7 +275,16 @@ def _apply_shift_zero_padded(arr: np.ndarray, dy: int, dx: int) -> np.ndarray:
 
 def _grid_transform(
     grid: list[list[int]],
-    op: Literal["identity", "transpose", "rot90", "rot180", "rot270", "flip_h", "flip_v", "shift"],
+    op: Literal[
+        "identity",
+        "transpose",
+        "rot90",
+        "rot180",
+        "rot270",
+        "flip_h",
+        "flip_v",
+        "shift",
+    ],
     *,
     dx: int = 0,
     dy: int = 0,
@@ -294,7 +313,16 @@ def _grid_transform(
 
 def _derive_global_color_map_for_grid_transform(
     pairs: Iterable[GridPair],
-    op: Literal["identity", "transpose", "rot90", "rot180", "rot270", "flip_h", "flip_v", "shift"],
+    op: Literal[
+        "identity",
+        "transpose",
+        "rot90",
+        "rot180",
+        "rot270",
+        "flip_h",
+        "flip_v",
+        "shift",
+    ],
     *,
     dx: int = 0,
     dy: int = 0,
@@ -303,7 +331,9 @@ def _derive_global_color_map_for_grid_transform(
     output_to_input: dict[int, int] = {}
     for pair in pairs:
         transformed = _grid_transform(pair.input_grid, op, dx=dx, dy=dy)
-        ok = _derive_color_map_constraints(transformed, pair.output_grid, input_to_output, output_to_input)
+        ok = _derive_color_map_constraints(
+            transformed, pair.output_grid, input_to_output, output_to_input
+        )
         if not ok:
             return None
     return _finalize_color_map(input_to_output)
@@ -320,17 +350,34 @@ def _wrap_with_color_map_if_match(
     with torch.no_grad():
         for pair in _iter_all_pairs(task):
             expected = pair.output_grid
+            exp_h, exp_w = len(expected), len(expected[0])
             in_tensor = torch.from_numpy(encode_grid_to_tensor(pair.input_grid))
             pred_tensor = base_model(in_tensor).detach().cpu().numpy()
-            pred_grid = decode_tensor_to_grid(pred_tensor, len(expected), len(expected[0]))
-            ok = _derive_color_map_constraints(pred_grid, expected, input_to_output, output_to_input)
+            # Reject if model output spatial dims don't match expected output dims
+            t = pred_tensor[0] if pred_tensor.ndim == 4 else pred_tensor
+            pred_h = t.shape[1] if t.shape[0] >= 10 else t.shape[0]
+            pred_w = t.shape[2] if t.ndim >= 3 else t.shape[1]
+            if pred_h < exp_h or pred_w < exp_w:
+                return None
+            pred_grid = decode_tensor_to_grid(
+                pred_tensor, exp_h, exp_w
+            )
+            ok = _derive_color_map_constraints(
+                pred_grid, expected, input_to_output, output_to_input
+            )
             if not ok:
                 return None
-    return CompositionalSolver(base_model, GeneralColorRemapSolver(_finalize_color_map(input_to_output)))
+    return CompositionalSolver(
+        base_model, GeneralColorRemapSolver(_finalize_color_map(input_to_output))
+    )
 
 
 def _candidate_geometries(max_shift: int) -> list[torch.nn.Module]:
-    geoms: list[torch.nn.Module] = [IdentitySolver(), TransposeSolver(), AntiTransposeSolver()]
+    geoms: list[torch.nn.Module] = [
+        IdentitySolver(),
+        TransposeSolver(),
+        AntiTransposeSolver(),
+    ]
     geoms.extend(RotationSolver(k=k) for k in (1, 2, 3))
     geoms.append(FlipSolver(horizontal=True))
     geoms.append(FlipSolver(horizontal=False))
@@ -374,7 +421,20 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
         search_pairs = list(_iter_search_pairs(task))
 
         # Geometry ops that preserve shape (or swap for transpose/rotations).
-        grid_ops: list[tuple[Literal["identity", "transpose", "rot90", "rot180", "rot270", "flip_h", "flip_v"], torch.nn.Module]] = [
+        grid_ops: list[
+            tuple[
+                Literal[
+                    "identity",
+                    "transpose",
+                    "rot90",
+                    "rot180",
+                    "rot270",
+                    "flip_h",
+                    "flip_v",
+                ],
+                torch.nn.Module,
+            ]
+        ] = [
             ("identity", IdentitySolver()),
             ("transpose", TransposeSolver()),
             ("rot90", RotationSolver(k=1)),
@@ -399,10 +459,14 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
                 for dx in range(-max_shift, max_shift + 1):
                     if dx == 0 and dy == 0:
                         continue
-                    cmap = _derive_global_color_map_for_grid_transform(search_pairs, "shift", dx=dx, dy=dy)
+                    cmap = _derive_global_color_map_for_grid_transform(
+                        search_pairs, "shift", dx=dx, dy=dy
+                    )
                     if cmap is None:
                         continue
-                    candidate = CompositionalSolver(ShiftSolver(dx=dx, dy=dy), GeneralColorRemapSolver(cmap))
+                    candidate = CompositionalSolver(
+                        ShiftSolver(dx=dx, dy=dy), GeneralColorRemapSolver(cmap)
+                    )
                     if check_solve(candidate, task):
                         return candidate
 
@@ -418,7 +482,9 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
         scale_h = out_h // in_h
         scale_w = out_w // in_w
         if scale_h >= 1 and scale_w >= 1:
-            upscale = NearestNeighborScaleSolver(in_h=in_h, in_w=in_w, scale_h=scale_h, scale_w=scale_w)
+            upscale = NearestNeighborScaleSolver(
+                in_h=in_h, in_w=in_w, scale_h=scale_h, scale_w=scale_w
+            )
             candidate = _wrap_with_color_map_if_match(upscale, task)
             if candidate is not None and check_solve(candidate, task):
                 return candidate
@@ -468,7 +534,12 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
                 return candidate
 
     # Lane M: Morphological ops (erode, dilate, color quantize, pattern repeat)
-    from neurogolf.solvers import ErodeSolver, DilateSolver, ColorQuantizeSolver, PatternRepeatSolver
+    from neurogolf.solvers import (
+        ErodeSolver,
+        DilateSolver,
+        ColorQuantizeSolver,
+        PatternRepeatSolver,
+    )
 
     morph_ops = [
         ("erode_1x", ErodeSolver(kernel_size=3, iterations=1)),
@@ -483,6 +554,24 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
 
     for op_name, morph_module in morph_ops:
         candidate = _wrap_with_color_map_if_match(morph_module, task)
+        if candidate is not None and check_solve(candidate, task):
+            return candidate
+
+    # ── Lane R: Relative Placement ────────────────────────────────────────────────
+    # RelativeMoveSolver: move object A to position of object B
+    rel_moves = [
+        (
+            "largest_to_smallest",
+            RelativeMoveSolver(source="largest", target="smallest"),
+        ),
+        (
+            "smallest_to_largest",
+            RelativeMoveSolver(source="smallest", target="largest"),
+        ),
+    ]
+
+    for name, rel_solver in rel_moves:
+        candidate = _wrap_with_color_map_if_match(rel_solver, task)
         if candidate is not None and check_solve(candidate, task):
             return candidate
 
@@ -610,7 +699,10 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
     # Lane O: DSL depth-3 with state-hash pruning
     try:
         from ideas_stack import solve_dsl
-        candidate, _desc = solve_dsl(task, max_shift=max_shift, depth=3, max_programs=1500)
+
+        candidate, _desc = solve_dsl(
+            task, max_shift=max_shift, depth=3, max_programs=1500
+        )
         if candidate is not None and check_solve(candidate, task):
             return candidate
     except Exception:
@@ -619,8 +711,8 @@ def find_master_synthesis(task: TaskData, max_shift: int = 2) -> torch.nn.Module
     return None
 
 
-
 # ─── Helper detectors for new solver lanes ───────────────────────────────────
+
 
 def _detect_bg(task: "TaskData") -> int:
     """Return the most common colour across all train inputs (background)."""
@@ -675,8 +767,13 @@ def _try_fold_overlay(task: "TaskData"):
             if all_ok:
                 max_h = max(np.array(p.input_grid).shape[0] for p in pairs)
                 max_w = max(np.array(p.input_grid).shape[1] for p in pairs)
-                return FoldOverlaySolver(flip_dim=flip_dim, mode=mode, bg_color=bg,
-                                        grid_h=max_h, grid_w=max_w)
+                return FoldOverlaySolver(
+                    flip_dim=flip_dim,
+                    mode=mode,
+                    bg_color=bg,
+                    grid_h=max_h,
+                    grid_w=max_w,
+                )
     return None
 
 
@@ -738,8 +835,9 @@ def _try_diagonal_tiling(task: "TaskData"):
         if all_ok:
             max_h = max(np.array(p.input_grid).shape[0] for p in pairs)
             max_w = max(np.array(p.input_grid).shape[1] for p in pairs)
-            return DiagonalPeriodicTilingSolver(period=period, grid_h=max_h, grid_w=max_w,
-                                               bg_color=bg)
+            return DiagonalPeriodicTilingSolver(
+                period=period, grid_h=max_h, grid_w=max_w, bg_color=bg
+            )
     return None
 
 
@@ -773,7 +871,7 @@ def _try_gravity(task: "TaskData"):
                     col = inp[:, c]
                     nz = col[col != bg]
                     if len(nz):
-                        cand[h - len(nz):, c] = nz
+                        cand[h - len(nz) :, c] = nz
             elif direction == "up":
                 for c in range(w):
                     col = inp[:, c]
@@ -785,7 +883,7 @@ def _try_gravity(task: "TaskData"):
                     row = inp[r, :]
                     nz = row[row != bg]
                     if len(nz):
-                        cand[r, w - len(nz):] = nz
+                        cand[r, w - len(nz) :] = nz
             elif direction == "left":
                 for r in range(h):
                     row = inp[r, :]
@@ -807,6 +905,7 @@ def _try_flood_fill(task: "TaskData"):
     a single fixed colour (consistent across all pairs).
     """
     from neurogolf.solvers import FloodFillSolver
+
     try:
         from scipy import ndimage  # type: ignore
     except ImportError:
@@ -878,7 +977,9 @@ def _try_flood_fill(task: "TaskData"):
     return None
 
 
-def _try_per_color_shift(task: "TaskData", max_shift: int = 3) -> torch.nn.Module | None:
+def _try_per_color_shift(
+    task: "TaskData", max_shift: int = 3
+) -> torch.nn.Module | None:
     """Detect PerColorShiftSolver: each non-bg color moves by a consistent (dy, dx)."""
     pairs = list(task.train) + list(task.test)
     if not pairs:
@@ -973,7 +1074,7 @@ def _try_extract_single_object(task: "TaskData") -> torch.nn.Module | None:
         if bb is None:
             continue
         y1, x1, y2, x2 = bb
-        crop = inp0[y1:y2+1, x1:x2+1]
+        crop = inp0[y1 : y2 + 1, x1 : x2 + 1]
         if crop.shape == out0.shape and np.array_equal(crop, out0):
             target_color = color
             target_bbox = bb
@@ -993,7 +1094,7 @@ def _try_extract_single_object(task: "TaskData") -> torch.nn.Module | None:
         if bb is None:
             return None
         py1, px1, py2, px2 = bb
-        crop = inp[py1:py2+1, px1:px2+1]
+        crop = inp[py1 : py2 + 1, px1 : px2 + 1]
         if not np.array_equal(crop, out):
             return None
 
@@ -1251,7 +1352,7 @@ def _try_rotation_quadrant(task: "TaskData") -> torch.nn.Module | None:
             q_bl = out[h:, :h]
             q_br = out[h:, h:]
 
-            r90  = np.rot90(inp, k=1)
+            r90 = np.rot90(inp, k=1)
             r180 = np.rot90(inp, k=2)
             r270 = np.rot90(inp, k=3)
 
@@ -1290,15 +1391,19 @@ def _try_rotation_quadrant(task: "TaskData") -> torch.nn.Module | None:
                 test_inp = np.array(task.test[0].input_grid, dtype=np.int32)
                 th = len(task.test[0].input_grid)
                 if cw:
-                    test_out = np.block([
-                        [test_inp, np.rot90(test_inp, k=3)],
-                        [np.rot90(test_inp, k=1), np.rot90(test_inp, k=2)],
-                    ])
+                    test_out = np.block(
+                        [
+                            [test_inp, np.rot90(test_inp, k=3)],
+                            [np.rot90(test_inp, k=1), np.rot90(test_inp, k=2)],
+                        ]
+                    )
                 else:
-                    test_out = np.block([
-                        [test_inp, np.rot90(test_inp, k=1)],
-                        [np.rot90(test_inp, k=3), np.rot90(test_inp, k=2)],
-                    ])
+                    test_out = np.block(
+                        [
+                            [test_inp, np.rot90(test_inp, k=1)],
+                            [np.rot90(test_inp, k=3), np.rot90(test_inp, k=2)],
+                        ]
+                    )
                 return ConstantGridSolver(test_out.tolist())
 
     return None
@@ -1697,7 +1802,7 @@ def _try_color_substitution(task: "TaskData") -> torch.nn.Module | None:
 
     Builds a 10-entry color_map[in_c] = out_c from pixel comparisons.
     Allows multiple input colors → same output (merge) or color → 0 (delete).
-    
+
     This is what wrong_colors failure mode needs — bijective remap fails when
     color sets differ between input and output.
     """
@@ -1743,6 +1848,7 @@ def _try_color_substitution(task: "TaskData") -> torch.nn.Module | None:
 def _fill_enclosed_np(inp: np.ndarray, bg: int, fill_color: int) -> np.ndarray:
     """4-connected flood fill: fill all bg cells NOT reachable from any border cell."""
     from collections import deque
+
     h, w = inp.shape
     visited = np.zeros((h, w), dtype=bool)
     queue: deque = deque()
@@ -1763,7 +1869,12 @@ def _fill_enclosed_np(inp: np.ndarray, bg: int, fill_color: int) -> np.ndarray:
     while queue:
         r, c = queue.popleft()
         for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-            if 0 <= nr < h and 0 <= nc < w and not visited[nr, nc] and inp[nr, nc] == bg:
+            if (
+                0 <= nr < h
+                and 0 <= nc < w
+                and not visited[nr, nc]
+                and inp[nr, nc] == bg
+            ):
                 visited[nr, nc] = True
                 queue.append((nr, nc))
 
@@ -1859,7 +1970,9 @@ def _try_color_by_rank(task: "TaskData") -> torch.nn.Module | None:
             mask = labeled == lid
             out_vals = set(int(out[r, c]) for r, c in zip(*np.where(mask))) - {bg}
             if len(out_vals) != 1:
-                return None  # component has multiple colors in output → not rank coloring
+                return (
+                    None  # component has multiple colors in output → not rank coloring
+                )
             rank_map[rank] = out_vals.pop()
 
         return rank_map
@@ -1960,12 +2073,16 @@ def _train_fallback(task: TaskData, task_id: str) -> torch.nn.Module | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset-root", default="/Users/bharath/Downloads/neurogolf-2026")
+    parser.add_argument(
+        "--dataset-root", default="/Users/bharath/Downloads/neurogolf-2026"
+    )
     parser.add_argument("--output-dir", default="artifacts/color_invariant_hybrid")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--train-fallback", action="store_true")
     parser.add_argument("--max-shift", type=int, default=2)
-    parser.add_argument("--failure-log", default=None, help="Path to write failure analysis JSON")
+    parser.add_argument(
+        "--failure-log", default=None, help="Path to write failure analysis JSON"
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -1973,7 +2090,7 @@ def main() -> None:
 
     files = sorted(Path(args.dataset_root).glob("task*.json"))
     if args.limit:
-        files = files[:args.limit]
+        files = files[: args.limit]
 
     solved = 0
     skipped = 0
@@ -1999,14 +2116,17 @@ def main() -> None:
             print(f"FAILED [{reason}]")
             continue
 
-        export_static_onnx(model, out_dir / f"{task_id}.onnx")
+        export_static_onnx(model, out_dir / f"{task_id}.onnx", competition_io=True)
         solved += 1
         print("SOLVED")
 
-    print(f"\nFinal tally: solved={solved}/{len(files)} | skipped={skipped} | failed={len(failures)}")
+    print(
+        f"\nFinal tally: solved={solved}/{len(files)} | skipped={skipped} | failed={len(failures)}"
+    )
 
     if failures:
         from collections import Counter
+
         clusters = Counter(f["reason"] for f in failures)
         print("\n── Failure clusters ──")
         for reason, count in clusters.most_common():
@@ -2015,6 +2135,7 @@ def main() -> None:
     if args.failure_log:
         import json
         from collections import Counter
+
         clusters = Counter(f["reason"] for f in failures)
         payload = {
             "solved": solved,
