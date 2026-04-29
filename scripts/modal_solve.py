@@ -55,7 +55,7 @@ def solve_single_task(task_path: str):
 
     model.cpu()
     tmp_path = f"/tmp/{task_id}.onnx"
-    export_static_onnx(model, tmp_path)
+    export_static_onnx(model, tmp_path, competition_io=True)
     with open(tmp_path, "rb") as f:
         bytes_data = f.read()
 
