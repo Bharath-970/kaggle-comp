@@ -1,5 +1,0 @@
-numpy>=1.26
-onnx>=1.16
-onnxscript>=0.5
-pytest>=8.0
-torch>=2.2
