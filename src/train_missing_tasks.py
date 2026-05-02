@@ -14,7 +14,6 @@ from pathlib import Path
 import numpy as np
 import onnx
 import onnxruntime
-from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -204,10 +203,11 @@ def main():
     args = parser.parse_args()
 
     results = []
-    for task_num in tqdm(args.tasks, desc="Training"):
+    for i, task_num in enumerate(args.tasks):
         result = solve_task_neural(task_num, args.data_dir, args.output_dir, args.model_type)
         results.append(result)
-        print(f"  task{task_num:03d}: {result['status']}, score={result.get('score', 'N/A')}")
+        if (i + 1) % 10 == 0 or i == len(args.tasks) - 1:
+            print(f"[{i+1}/{len(args.tasks)}] task{task_num:03d}: {result['status']}, score={result.get('score', 'N/A')}")
 
     # Save results
     out_json = Path(args.output_dir) / "neural_training_results.json"
